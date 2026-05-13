@@ -1,0 +1,10 @@
+/* CF7 Abholtermin-Picker – Minimales Styling */
+.flatpickr-calendar {
+    font-family: inherit;
+}
+
+.cf7-abholpicker,
+.cf7-abholzeit {
+    width: 100%;
+    box-sizing: border-box;
+}
