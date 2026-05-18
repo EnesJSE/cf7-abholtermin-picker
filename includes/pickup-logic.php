@@ -1,203 +1,262 @@
 <?php
+/**
+ * Abhol-Logik: Berechnet den frühestmöglichen Abholtermin und liefert
+ * alle für den Datepicker benötigten Daten.
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /**
  * ============================================================
- * KONFIGURATION – Hier alle Parameter anpassen
+ * KONFIGURATION (nur Öffnungszeiten — Rest kommt aus dem Admin-UI)
  * ============================================================
  */
 
-// Feiertage (Format: 'YYYY-MM-DD') – an diesen Tagen keine Abholung
-$CF7AP_FEIERTAGE = [
-    '2025-01-01', // Neujahr
-    '2025-04-18', // Karfreitag
-    '2025-04-21', // Ostermontag
-    '2025-05-01', // Tag der Arbeit
-    '2025-05-29', // Christi Himmelfahrt
-    '2025-06-09', // Pfingstmontag
-    '2025-10-03', // Tag der Deutschen Einheit
-    '2025-12-25', // 1. Weihnachtstag
-    '2025-12-26', // 2. Weihnachtstag
-    // Weitere Daten hier ergänzen...
-];
-
-// Betriebsferien (Format: ['von' => 'YYYY-MM-DD', 'bis' => 'YYYY-MM-DD'])
-$CF7AP_BETRIEBSFERIEN = [
-    [ 'von' => '2025-08-04', 'bis' => '2025-08-15' ],
-    // Weitere Zeiträume hier ergänzen...
-];
-
-/**
- * ============================================================
- * LOGIK-FUNKTIONEN (nicht ändern)
- * ============================================================
- */
-
-/**
- * Berechnet den frühestmöglichen Abholtermin als DateTime-Objekt.
- * Gibt ein associative Array zurück mit:
- *   - earliest_date (YYYY-MM-DD)
- *   - disabled_dates (Array von YYYY-MM-DD Strings)
- *   - max_date (YYYY-MM-DD, 30 Tage ab heute)
- */
-function cf7ap_get_pickup_config(): array {
-
-    global $CF7AP_FEIERTAGE, $CF7AP_BETRIEBSFERIEN;
-
-    $now = new DateTime( 'now', new DateTimeZone( 'Europe/Berlin' ) );
-
-    // Schritt 1: Bearbeitungsbeginn ermitteln
-    $processing_start = cf7ap_next_processing_start( $now );
-
-    // Schritt 2: 24h Vorlaufzeit addieren
-    $lead_end = clone $processing_start;
-    $lead_end->modify( '+24 hours' );
-
-    // Schritt 3: Ersten verfügbaren Abholtag finden
-    $earliest = cf7ap_next_pickup_day( $lead_end );
-
-    // Gesperrte Einzeltage sammeln (Feiertage + Betriebsferien + Wochentage ohne Abholung)
-    $disabled = cf7ap_build_disabled_dates( $now );
-
+// Bearbeitungsfenster intern (1 = Montag ... 7 = Sonntag)
+function cf7ap_processing_windows(): array {
     return [
-        'earliest_date'  => $earliest->format( 'Y-m-d' ),
-        'disabled_dates' => $disabled,
-        'max_date'       => ( clone $now )->modify( '+30 days' )->format( 'Y-m-d' ),
-        'pickup_min_time' => '09:30',
-        'pickup_max_time' => '12:30',
+        1 => [ '08:00', '16:00' ], // Montag
+        2 => [ '08:00', '16:00' ], // Dienstag
+        3 => [ '08:00', '16:00' ], // Mittwoch
+        4 => [ '08:00', '16:00' ], // Donnerstag
+        5 => [ '08:00', '12:00' ], // Freitag
+        // Samstag/Sonntag: keine Bearbeitung
     ];
 }
 
+// Abholfenster
+const CF7AP_PICKUP_START_H = 9;
+const CF7AP_PICKUP_START_M = 30;
+const CF7AP_PICKUP_END_H   = 12;
+const CF7AP_PICKUP_END_M   = 30;
+
+// Slots im Abholfenster (alle 30 Minuten)
+function cf7ap_time_slots(): array {
+    return [ '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '12:30' ];
+}
+
+// Vorlaufzeit in Stunden
+const CF7AP_LEAD_HOURS = 24;
+
+// Maximaler Vorausbuchungszeitraum in Tagen
+const CF7AP_MAX_DAYS_AHEAD = 30;
+
+// Zeitzone
+const CF7AP_TIMEZONE = 'Europe/Berlin';
+
+
 /**
- * Findet den nächsten Bearbeitungsbeginn ab $from.
- * Mo–Do: 08:00–16:00, Fr: 08:00–12:00, Sa/So: kein Bearbeitungsbeginn.
+ * ============================================================
+ * ÖFFENTLICHE GETTER FÜR FEIERTAGE/BETRIEBSFERIEN (aus DB)
+ * ============================================================
+ */
+
+function cf7ap_get_feiertage(): array {
+    $raw = get_option( 'cf7ap_feiertage', [] );
+    if ( ! is_array( $raw ) ) {
+        return [];
+    }
+    return array_values( array_filter( $raw, 'is_string' ) );
+}
+
+function cf7ap_get_betriebsferien(): array {
+    $raw = get_option( 'cf7ap_betriebsferien', [] );
+    if ( ! is_array( $raw ) ) {
+        return [];
+    }
+    return array_values( array_filter( $raw, function ( $r ) {
+        return is_array( $r ) && ! empty( $r['von'] ) && ! empty( $r['bis'] );
+    } ) );
+}
+
+
+/**
+ * ============================================================
+ * HAUPTFUNKTION: Konfiguration für den Datepicker erzeugen
+ * ============================================================
+ */
+
+function cf7ap_get_pickup_config(): array {
+
+    $now              = new DateTime( 'now', new DateTimeZone( CF7AP_TIMEZONE ) );
+    $processing_start = cf7ap_next_processing_start( $now );
+
+    $lead_end = clone $processing_start;
+    $lead_end->modify( '+' . CF7AP_LEAD_HOURS . ' hours' );
+
+    $earliest = cf7ap_next_pickup_slot( $lead_end );
+
+    $disabled = cf7ap_build_disabled_dates( $now );
+
+    $max = ( clone $now )->modify( '+' . CF7AP_MAX_DAYS_AHEAD . ' days' );
+
+    return [
+        'earliest_date'  => $earliest->format( 'Y-m-d' ),
+        'earliest_time'  => $earliest->format( 'H:i' ),
+        'max_date'       => $max->format( 'Y-m-d' ),
+        'disabled_dates' => $disabled,
+        'time_slots'     => cf7ap_time_slots(),
+    ];
+}
+
+
+/**
+ * Nächster Bearbeitungsbeginn ab $from.
+ * Berücksichtigt Wochenenden und Öffnungszeiten — Feiertage NICHT
+ * (die wirken nur auf die Abholung, nicht auf die Bearbeitung).
  */
 function cf7ap_next_processing_start( DateTime $from ): DateTime {
 
-    $dt = clone $from;
+    $dt      = clone $from;
+    $windows = cf7ap_processing_windows();
 
-    // Bearbeitungsfenster je Wochentag (1=Mo ... 7=So)
-    $processing_windows = [
-        1 => [ 'start' => '08:00', 'end' => '16:00' ], // Montag
-        2 => [ 'start' => '08:00', 'end' => '16:00' ], // Dienstag
-        3 => [ 'start' => '08:00', 'end' => '16:00' ], // Mittwoch
-        4 => [ 'start' => '08:00', 'end' => '16:00' ], // Donnerstag
-        5 => [ 'start' => '08:00', 'end' => '12:00' ], // Freitag
-        // 6 = Samstag, 7 = Sonntag → kein Eintrag
-    ];
+    // Safety-Limit: max. 2 Wochen iterieren
+    for ( $i = 0; $i < 14; $i++ ) {
 
-    for ( $i = 0; $i < 14; $i++ ) { // max. 2 Wochen iterieren (Sicherheits-Limit)
+        $dow = (int) $dt->format( 'N' );
 
-        $dow = (int) $dt->format( 'N' ); // 1=Mo, 7=So
+        if ( isset( $windows[ $dow ] ) ) {
 
-        if ( isset( $processing_windows[ $dow ] ) ) {
-            $window = $processing_windows[ $dow ];
+            [ $s, $e ] = $windows[ $dow ];
 
-            // Ist die aktuelle Uhrzeit noch innerhalb des Fensters?
-            $window_start = ( clone $dt )->setTime( ...array_map( 'intval', explode( ':', $window['start'] ) ) );
-            $window_end   = ( clone $dt )->setTime( ...array_map( 'intval', explode( ':', $window['end'] ) ) );
+            $start = ( clone $dt )->setTime(
+                ...array_map( 'intval', explode( ':', $s ) )
+            );
+            $end = ( clone $dt )->setTime(
+                ...array_map( 'intval', explode( ':', $e ) )
+            );
 
-            if ( $dt < $window_end ) {
-                // Bestellung kommt noch heute an – Bearbeitungsbeginn ist jetzt oder um Öffnung
-                if ( $dt >= $window_start ) {
-                    return $dt; // Mitten im Fenster → sofort
-                } else {
-                    return $window_start; // Vor Öffnung → warte auf Öffnung
-                }
+            if ( $dt < $end ) {
+                return ( $dt >= $start ) ? $dt : $start;
             }
         }
 
-        // Tag überspringen → nächsten Tag, ab 00:00
         $dt->modify( '+1 day' )->setTime( 0, 0, 0 );
     }
 
     return $dt; // Fallback
 }
 
+
 /**
- * Findet den ersten Abholtag (Mo–Sa) nach $after, der kein gesperrter Tag ist.
+ * Findet den ersten gültigen Abhol-Slot ab $after.
+ * Berücksichtigt: Abholfenster (09:30–12:30), Sonntag, Feiertage, Betriebsferien.
+ * Zeit wird auf den nächsten 30-Minuten-Slot aufgerundet.
  */
-function cf7ap_next_pickup_day( DateTime $after ): DateTime {
+function cf7ap_next_pickup_slot( DateTime $after ): DateTime {
 
-    global $CF7AP_FEIERTAGE, $CF7AP_BETRIEBSFERIEN;
+    $feiertage = cf7ap_get_feiertage();
+    $ferien    = cf7ap_get_betriebsferien();
 
-    $dt = clone $after;
+    $dt           = clone $after;
+    $minutes_now  = (int) $dt->format( 'H' ) * 60 + (int) $dt->format( 'i' );
+    $window_start = CF7AP_PICKUP_START_H * 60 + CF7AP_PICKUP_START_M;
+    $window_end   = CF7AP_PICKUP_END_H * 60 + CF7AP_PICKUP_END_M;
 
-    // Wenn Vorlaufzeit mitten im Tag endet, gilt der Tag nur, wenn Abholung noch möglich (ab 09:30)
-    $dt_time = (int) $dt->format( 'H' ) * 60 + (int) $dt->format( 'i' );
-    if ( $dt_time >= 12 * 60 + 30 ) {
-        // Abholzeit vorbei → nächsten Tag
-        $dt->modify( '+1 day' )->setTime( 9, 30, 0 );
+    if ( $minutes_now > $window_end ) {
+        // Nach Abholfenster → nächster Tag, 09:30
+        $dt->modify( '+1 day' )->setTime( CF7AP_PICKUP_START_H, CF7AP_PICKUP_START_M, 0 );
+    } elseif ( $minutes_now < $window_start ) {
+        // Vor Abholfenster → heute 09:30
+        $dt->setTime( CF7AP_PICKUP_START_H, CF7AP_PICKUP_START_M, 0 );
     } else {
-        // Abholung heute noch möglich → frühestens 09:30
-        if ( $dt_time < 9 * 60 + 30 ) {
-            $dt->setTime( 9, 30, 0 );
-        }
+        // Innerhalb Abholfenster → auf nächsten 30-Min-Slot aufrunden
+        $dt = cf7ap_round_up_to_slot( $dt );
     }
 
-    for ( $i = 0; $i < 60; $i++ ) { // max. 60 Tage
+    // Iteriere bis zu einem zulässigen Tag (max. 90 Tage Safety)
+    for ( $i = 0; $i < 90; $i++ ) {
 
-        $dow        = (int) $dt->format( 'N' );
-        $date_str   = $dt->format( 'Y-m-d' );
-        $is_holiday = in_array( $date_str, $CF7AP_FEIERTAGE, true );
-        $is_vacation = cf7ap_in_betriebsferien( $dt, $CF7AP_BETRIEBSFERIEN );
+        $dow      = (int) $dt->format( 'N' );
+        $date_str = $dt->format( 'Y-m-d' );
 
-        // Abholung: Mo(1)–Sa(6), kein Feiertag, keine Betriebsferien
-        if ( $dow <= 6 && ! $is_holiday && ! $is_vacation ) {
+        $is_sunday   = ( $dow === 7 );
+        $is_holiday  = in_array( $date_str, $feiertage, true );
+        $is_vacation = cf7ap_in_betriebsferien( $dt, $ferien );
+
+        if ( ! $is_sunday && ! $is_holiday && ! $is_vacation ) {
             return $dt;
         }
 
-        $dt->modify( '+1 day' )->setTime( 9, 30, 0 );
+        $dt->modify( '+1 day' )->setTime( CF7AP_PICKUP_START_H, CF7AP_PICKUP_START_M, 0 );
     }
 
     return $dt; // Fallback
 }
+
+
+/**
+ * Rundet eine Uhrzeit auf den nächsten 30-Minuten-Slot auf.
+ */
+function cf7ap_round_up_to_slot( DateTime $dt ): DateTime {
+
+    $minutes = (int) $dt->format( 'H' ) * 60 + (int) $dt->format( 'i' );
+    $rounded = (int) ceil( $minutes / 30 ) * 30;
+
+    if ( $rounded === $minutes && (int) $dt->format( 's' ) === 0 ) {
+        return $dt;
+    }
+
+    $result = clone $dt;
+    $h      = intdiv( $rounded, 60 );
+    $m      = $rounded % 60;
+
+    if ( $h >= 24 ) {
+        $result->modify( '+1 day' );
+        $h -= 24;
+    }
+
+    $result->setTime( $h, $m, 0 );
+    return $result;
+}
+
 
 /**
  * Prüft, ob ein Datum innerhalb der Betriebsferien liegt.
  */
 function cf7ap_in_betriebsferien( DateTime $dt, array $ferien ): bool {
 
-    foreach ( $ferien as $zeitraum ) {
-        $von = new DateTime( $zeitraum['von'] );
-        $bis = new DateTime( $zeitraum['bis'] );
-        $bis->setTime( 23, 59, 59 );
+    $check_date = $dt->format( 'Y-m-d' );
 
-        if ( $dt >= $von && $dt <= $bis ) {
-            return true;
+    foreach ( $ferien as $r ) {
+        try {
+            $von = $r['von'];
+            $bis = $r['bis'];
+
+            if ( $check_date >= $von && $check_date <= $bis ) {
+                return true;
+            }
+        } catch ( Exception $e ) {
+            continue;
         }
     }
 
     return false;
 }
 
+
 /**
- * Erstellt eine Liste aller gesperrten Datumsstrings für Flatpickr.
- * Enthält: Sonntage, Feiertage, Betriebsferien (als Einzeltage).
+ * Liefert eine Liste aller im Vorausbuchungszeitraum gesperrten Tage.
+ * Enthält: alle Sonntage, alle Feiertage, alle Tage in Betriebsferien.
  */
 function cf7ap_build_disabled_dates( DateTime $from ): array {
 
-    global $CF7AP_FEIERTAGE, $CF7AP_BETRIEBSFERIEN;
+    $feiertage = cf7ap_get_feiertage();
+    $ferien    = cf7ap_get_betriebsferien();
 
     $disabled = [];
-    $dt       = clone $from;
-    $dt->setTime( 0, 0, 0 );
-    $end = ( clone $from )->modify( '+31 days' );
+    $dt       = ( clone $from )->setTime( 0, 0, 0 );
+    $end      = ( clone $from )->modify( '+' . ( CF7AP_MAX_DAYS_AHEAD + 1 ) . ' days' );
 
     while ( $dt <= $end ) {
+
         $dow      = (int) $dt->format( 'N' );
         $date_str = $dt->format( 'Y-m-d' );
 
-        // Sonntag (7) immer sperren
-        if ( $dow === 7 ) {
-            $disabled[] = $date_str;
-        }
-        // Feiertage sperren
-        elseif ( in_array( $date_str, $CF7AP_FEIERTAGE, true ) ) {
-            $disabled[] = $date_str;
-        }
-        // Betriebsferien sperren
-        elseif ( cf7ap_in_betriebsferien( $dt, $CF7AP_BETRIEBSFERIEN ) ) {
+        if ( $dow === 7
+            || in_array( $date_str, $feiertage, true )
+            || cf7ap_in_betriebsferien( $dt, $ferien )
+        ) {
             $disabled[] = $date_str;
         }
 

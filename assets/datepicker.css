@@ -1,10 +1,22 @@
-/* CF7 Abholtermin-Picker – Minimales Styling */
-.flatpickr-calendar {
-    font-family: inherit;
-}
+/**
+ * CF7 Abholtermin-Picker — Frontend-Styling
+ */
 
 .cf7-abholpicker,
 .cf7-abholzeit {
     width: 100%;
     box-sizing: border-box;
+}
+
+.flatpickr-calendar {
+    font-family: inherit;
+}
+
+/* Avada überschreibt input-styling teilweise — sicherstellen, dass der
+   Datepicker-Input nicht "verschwindet" wegen altInput */
+input.flatpickr-input.form-control {
+    display: none !important;
+}
+.flatpickr-input.input {
+    display: none !important;
 }
