@@ -45,3 +45,68 @@
     border-color: #b32d2e !important;
     background: #fef1f1 !important;
 }
+
+/* Bundesweite Feiertage – read-only Grid */
+.cf7ap-national-grid {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin: 1em 0;
+}
+
+.cf7ap-national-year {
+    background: #f6f7f7;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+    padding: 14px 18px;
+    min-width: 240px;
+}
+
+.cf7ap-national-year strong {
+    display: block;
+    font-size: 1.1em;
+    margin-bottom: 10px;
+    color: #1d2327;
+}
+
+.cf7ap-national-year ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.cf7ap-national-year li {
+    display: flex;
+    gap: 10px;
+    padding: 4px 0;
+    border-bottom: 1px solid #ececec;
+    font-size: 0.9em;
+    color: #50575e;
+}
+
+.cf7ap-national-year li:last-child {
+    border-bottom: none;
+}
+
+.cf7ap-date {
+    font-family: monospace;
+    color: #1d2327;
+    min-width: 72px;
+}
+
+/* Badges */
+.cf7ap-badge {
+    display: inline-block;
+    font-size: 0.7em;
+    font-weight: normal;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #00a32a;
+    color: #fff;
+    vertical-align: middle;
+    margin-left: 6px;
+}
+
+.cf7ap-badge--custom {
+    background: #2271b1;
+}

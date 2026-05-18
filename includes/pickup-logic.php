@@ -47,16 +47,93 @@ const CF7AP_TIMEZONE = 'Europe/Berlin';
 
 /**
  * ============================================================
+ * BUNDESWEITE FEIERTAGE (automatisch berechnet)
+ * ============================================================
+ */
+
+/**
+ * Berechnet das Ostersonntag-Datum für ein gegebenes Jahr.
+ * Algorithmus: Meeus/Jones/Butcher (Gregorianischer Kalender).
+ */
+function cf7ap_easter_date( int $year ): DateTime {
+    $a = $year % 19;
+    $b = intdiv( $year, 100 );
+    $c = $year % 100;
+    $d = intdiv( $b, 4 );
+    $e = $b % 4;
+    $f = intdiv( $b + 8, 25 );
+    $g = intdiv( $b - $f + 1, 3 );
+    $h = ( 19 * $a + $b - $d - $g + 15 ) % 30;
+    $i = intdiv( $c, 4 );
+    $k = $c % 4;
+    $l = ( 32 + 2 * $e + 2 * $i - $h - $k ) % 7;
+    $m = intdiv( $a + 11 * $h + 22 * $l, 451 );
+
+    $month = intdiv( $h + $l - 7 * $m + 114, 31 );
+    $day   = ( ( $h + $l - 7 * $m + 114 ) % 31 ) + 1;
+
+    return new DateTime( sprintf( '%04d-%02d-%02d', $year, $month, $day ) );
+}
+
+/**
+ * Gibt alle bundesweit geltenden gesetzlichen Feiertage für ein Jahr zurück.
+ * Enthält: Neujahr, Karfreitag, Ostermontag, Tag der Arbeit,
+ *          Christi Himmelfahrt, Pfingstmontag, Tag der Deutschen Einheit,
+ *          1. und 2. Weihnachtstag.
+ *
+ * @return string[]  Array von Datumsstrings im Format Y-m-d
+ */
+function cf7ap_national_holidays( int $year ): array {
+    $easter = cf7ap_easter_date( $year );
+
+    return [
+        // Feste Feiertage
+        sprintf( '%d-01-01', $year ), // Neujahr
+        sprintf( '%d-05-01', $year ), // Tag der Arbeit
+        sprintf( '%d-10-03', $year ), // Tag der Deutschen Einheit
+        sprintf( '%d-12-25', $year ), // 1. Weihnachtstag
+        sprintf( '%d-12-26', $year ), // 2. Weihnachtstag
+
+        // Bewegliche Feiertage (relativ zu Ostersonntag)
+        ( clone $easter )->modify( '-2 days' )->format( 'Y-m-d' ),  // Karfreitag
+        ( clone $easter )->modify( '+1 day' )->format( 'Y-m-d' ),   // Ostermontag
+        ( clone $easter )->modify( '+39 days' )->format( 'Y-m-d' ), // Christi Himmelfahrt
+        ( clone $easter )->modify( '+50 days' )->format( 'Y-m-d' ), // Pfingstmontag
+    ];
+}
+
+
+/**
+ * ============================================================
  * ÖFFENTLICHE GETTER FÜR FEIERTAGE/BETRIEBSFERIEN (aus DB)
  * ============================================================
  */
 
+/**
+ * Gibt alle Feiertage zurück: bundesweite (automatisch) + benutzerdefinierte (aus Admin-UI).
+ */
 function cf7ap_get_feiertage(): array {
-    $raw = get_option( 'cf7ap_feiertage', [] );
-    if ( ! is_array( $raw ) ) {
-        return [];
+    $tz           = new DateTimeZone( CF7AP_TIMEZONE );
+    $current_year = (int) ( new DateTime( 'now', $tz ) )->format( 'Y' );
+
+    // Bundesweite Feiertage für aktuelles und die nächsten 2 Jahre
+    $national = [];
+    for ( $y = $current_year; $y <= $current_year + 2; $y++ ) {
+        $national = array_merge( $national, cf7ap_national_holidays( $y ) );
     }
-    return array_values( array_filter( $raw, 'is_string' ) );
+
+    // Benutzerdefinierte Feiertage aus dem Admin-UI
+    $custom = get_option( 'cf7ap_feiertage', [] );
+    if ( ! is_array( $custom ) ) {
+        $custom = [];
+    }
+    $custom = array_values( array_filter( $custom, 'is_string' ) );
+
+    // Zusammenführen, Duplikate entfernen, sortieren
+    $all = array_unique( array_merge( $national, $custom ) );
+    sort( $all );
+
+    return array_values( $all );
 }
 
 function cf7ap_get_betriebsferien(): array {
